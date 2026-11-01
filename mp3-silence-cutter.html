@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MP3 範囲カットツール</title>
+<style>
+  :root { --bg:#12151c; --card:#1c212c; --line:#2d3445; --text:#e8ecf4; --sub:#8b94a8; --accent:#4cc3ff; --cut:#ff5d6c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; line-height:1.5; }
+  .wrap { max-width:820px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.3rem; margin:8px 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:14px; }
+  .drop { border:2px dashed var(--line); border-radius:12px; padding:28px 12px; text-align:center; color:var(--sub); cursor:pointer; }
+  .drop.over { border-color:var(--accent); color:var(--accent); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
+  label { font-size:.85rem; color:var(--sub); display:block; margin-bottom:4px; }
+  input[type=number], input[type=text], select { width:100%; padding:8px; border-radius:8px; border:1px solid var(--line); background:#10141b; color:var(--text); font-size:1rem; }
+  input[type=range] { width:100%; }
+  button { background:var(--accent); color:#00232f; border:0; border-radius:10px; padding:11px 18px; font-size:1rem; font-weight:700; cursor:pointer; }
+  button.sec { background:#2a3144; color:var(--text); font-weight:500; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  canvas { width:100%; height:140px; background:#0d1016; border-radius:8px; display:block; }
+  .info { color:var(--sub); font-size:.9rem; margin-top:6px; }
+  #list { max-height:300px; overflow:auto; margin-top:8px; }
+  .item { display:flex; align-items:center; gap:10px; padding:7px 4px; border-bottom:1px solid var(--line); font-size:.92rem; }
+  .item input { width:20px; height:20px; }
+  .item .t { flex:1; font-variant-numeric:tabular-nums; }
+  .item button { padding:5px 10px; font-size:.8rem; }
+  .bar { height:8px; background:#10141b; border-radius:4px; overflow:hidden; margin-top:10px; display:none; }
+  .bar > div { height:100%; width:0; background:var(--accent); }
+  a.dl { display:inline-block; background:#3ddc97; color:#00281a; padding:11px 18px; border-radius:10px; font-weight:700; text-decoration:none; }
+  audio { width:100%; margin-top:10px; }
+  .hide { display:none; }
+  details.help summary { cursor:pointer; font-weight:700; }
+  details.help ol, details.help ul { margin:8px 0; padding-left:1.4em; }
+  details.help li { margin:4px 0; font-size:.92rem; }
+  details.help code { background:#10141b; padding:1px 5px; border-radius:4px; }
+  details.help .note { color:var(--sub); font-size:.85rem; margin:6px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎧 MP3 範囲カットツール</h1>
+
+  <details class="card help">
+    <summary>📖 使い方</summary>
+    <ol>
+      <li><b>読み込む</b>:MP3をドロップするか、枠をタップして選びます。</li>
+      <li><b>範囲を決める</b>(始点より前と終点より後がカットされます)
+        <ul>
+          <li>波形をタップ(ラジオで始点/終点を切り替え)</li>
+          <li>始点・終点の欄に <code>0:01:23.45</code> の形式で入力</li>
+          <li>無音リストの「始点に」「終点に」で指定(音の境目から「書き出し時に残す無音の長さ」ぶん無音を残します)</li>
+        </ul>
+      </li>
+      <li><b>確認する</b>:水色の部分が残る範囲です。「最初から」「始点から」で再生、「選択解除」で全体に戻ります。</li>
+      <li><b>書き出す</b>:「選択範囲を書き出し」を押すと、進捗と残り時間が出て、完了後にダウンロードできます。</li>
+    </ol>
+    <p class="note">設定はブラウザに記憶されます。出力形式は初期値の「自動」で入力と同じ音質になります(判定できない場合は192kbps)。MP3の書き出しは再エンコードのため、劣化を避けたい場合はWAVを選んでください。</p>
+  </details>
+
+  <div class="card">
+    <div id="drop" class="drop">ここにMP3をドロップ / タップして選択<input id="file" type="file" accept="audio/*,.mp3" class="hide"></div>
+    <div id="fname" class="info"></div>
+    <div class="bar" id="lbar"><div></div></div>
+    <div class="info" id="lstat"></div>
+  </div>
+
+  <div class="card hide" id="trimCard">
+    <div class="info" style="margin:0 0 8px">✂ 範囲指定:始点より前と終点より後をカットします(波形をタップして位置を指定できます)</div>
+    <canvas id="wave0" width="1600" height="200" style="height:100px"></canvas>
+    <div class="row" style="margin:10px 0">
+      <label style="margin:0"><input type="radio" name="pick" value="s" checked> 波形タップ=始点</label>
+      <label style="margin:0"><input type="radio" name="pick" value="e"> 波形タップ=終点</label>
+    </div>
+    <div class="grid">
+      <div><label>始点(時:分:秒)</label><input id="tStart" type="text" inputmode="decimal"></div>
+      <div><label>終点(時:分:秒)</label><input id="tEnd" type="text" inputmode="decimal"></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="sec" id="pFirst">▶ 最初から</button>
+      <button class="sec" id="pStart">▶ 始点から</button>
+      <button class="sec" id="pStop">■ 停止</button>
+      <button class="sec" id="tReset">選択解除</button>
+    </div>
+    <div class="info" id="trimInfo"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="runTrim">選択範囲を書き出し</button>
+      <span class="info" style="margin:0">(始点〜終点をそのまま出力。形式は下の「出力形式」に従います)</span>
+    </div>
+    <div class="bar" id="bar2"><div></div></div>
+    <div id="out2" style="margin-top:10px"></div>
+    <div class="info" style="margin-top:12px">無音リストから始点・終点を選ぶ:「始点に」は音が始まる位置の手前、「終点に」は音が終わった位置の後ろに、設定した秒数(下の「書き出し時に残す無音の長さ」)の無音を残して指定します。</div>
+    <div id="pickList" style="max-height:240px;overflow:auto;margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div>
+        <label>無音とみなす音量(dB): <b id="thVal">-50</b></label>
+        <input id="th" type="range" min="-80" max="-20" value="-50">
+      </div>
+      <div>
+        <label>検出する無音の長さ(秒)</label>
+        <input id="minLen" type="number" min="0.1" step="0.1" value="1">
+      </div>
+      <div>
+        <label>書き出し時に残す無音の長さ(秒)</label>
+        <input id="keep" type="number" min="0" step="0.1" value="1">
+      </div>
+      <div>
+        <label>出力形式</label>
+        <select id="fmt">
+          <option value="auto">自動(入力と同じ音質)</option>
+          <option value="mp3">MP3 (128kbps)</option>
+          <option value="mp3_192">MP3 (192kbps)</option>
+          <option value="mp3_320">MP3 (320kbps)</option>
+          <option value="wav">WAV (劣化なし)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let audioBuf = null, fileName = '';
+
+// ---------- ファイル読み込み ----------
+$('drop').onclick = () => $('file').click();
+$('file').onchange = e => e.target.files[0] && load(e.target.files[0]);
+['dragover','dragenter'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.add('over'); }));
+['dragleave','drop'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.remove('over'); }));
+$('drop').addEventListener('drop', e => e.dataTransfer.files[0] && load(e.dataTransfer.files[0]));
+$('th').oninput = () => $('thVal').textContent = $('th').value;
+
+// 入力のビットレートを推定し、MP3で使える標準値に丸める
+function snapKbps(k, sr) {
+  const list = [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+  if (!isFinite(k) || k < 24 || k > 400) return 192; // 判定できない/非圧縮はデフォルトの192
+  let best = list[0];
+  list.forEach(l => { if (Math.abs(Math.log(k / l)) < Math.abs(Math.log(k / best))) best = l; });
+  if (sr < 32000) best = Math.min(best, 160); // 低サンプリングレートのMP3は最大160kbps
+  return best;
+}
+const kbpsFor = v => v === 'auto' ? srcKbps : v === 'mp3' ? 128 : v === 'mp3_192' ? 192 : 320;
+
+// ---------- 設定の記憶(localStorage) ----------
+const SKEY = 'mp3RangeCutter.settings.v1';
+const SETTING_IDS = ['th', 'minLen', 'keep', 'fmt'];
+function saveSettings() {
+  try {
+    const o = {};
+    SETTING_IDS.forEach(id => o[id] = $(id).value);
+    o.pick = document.querySelector('input[name=pick]:checked').value;
+    localStorage.setItem(SKEY, JSON.stringify(o));
+  } catch (e) {}
+}
+(function loadSettings() {
+  try {
+    const o = JSON.parse(localStorage.getItem(SKEY) || '{}');
+    SETTING_IDS.forEach(id => {
+      if (o[id] === undefined) return;
+      const el = $(id);
+      if (el.tagName === 'SELECT' && ![...el.options].some(op => op.value === o[id])) return;
+      el.value = o[id];
+    });
+    if (o.pick) { const r = document.querySelector(`input[name=pick][value="${o.pick}"]`); if (r) r.checked = true; }
+    $('thVal').textContent = $('th').value;
+  } catch (e) {}
+})();
+SETTING_IDS.forEach(id => { $(id).addEventListener('input', saveSettings); $(id).addEventListener('change', saveSettings); });
+document.querySelectorAll('input[name=pick]').forEach(r => r.addEventListener('change', saveSettings));
+
+// 先頭のID3タグや余計なデータを飛ばして最初のMP3フレームから切り出す
+function frameOffset(u8) {
+  let i = 0;
+  if (u8[0] === 0x49 && u8[1] === 0x44 && u8[2] === 0x33) { // ID3v2
+    i = 10 + ((u8[6] & 0x7f) << 21 | (u8[7] & 0x7f) << 14 | (u8[8] & 0x7f) << 7 | (u8[9] & 0x7f));
+  }
+  for (; i < u8.length - 4; i++) {
+    if (u8[i] === 0xff && (u8[i + 1] & 0xe0) === 0xe0 && (u8[i + 1] & 0x18) !== 0x08 && (u8[i + 2] & 0xf0) !== 0xf0) return i;
+  }
+  return 0;
+}
+function stripToFrame(u8) { const o = frameOffset(u8); return o ? u8.slice(o) : u8; }
+
+let t0 = 0, srcAudioBytes = 0, srcKbps = 192;
+const fmtSec = x => x >= 60 ? `${Math.floor(x / 60)}分${Math.round(x % 60)}秒` : `${Math.max(1, Math.round(x))}秒`;
+function progText(label, p) {
+  let t = `${label} ${Math.floor(p * 100)}%`;
+  const el = (performance.now() - t0) / 1000;
+  if (p > 0.03 && p < 1) t += ` / 残り約${fmtSec(el / p * (1 - p))}`;
+  return t;
+}
+function loadProg(p, label) {
+  $('lbar').style.display = 'block';
+  $('lbar').firstElementChild.style.width = (p * 100) + '%';
+  $('lstat').textContent = progText(label, p);
+}
+const tick = () => new Promise(r => setTimeout(r, 0));
+
+function readBuf(file) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onprogress = e => e.lengthComputable && loadProg(e.loaded / e.total * 0.1, 'ファイル読み込み中');
+    fr.onload = () => res(new Uint8Array(fr.result));
+    fr.onerror = () => rej(fr.error || new Error('ファイルを読めません'));
+    fr.readAsArrayBuffer(file);
+  });
+}
+
+// WASMデコーダでチャンクごとにデコード(実際の進捗%と残り時間が出せる)
+async function decodeWasm(raw) {
+  const mod = await import('https://cdn.jsdelivr.net/npm/mpg123-decoder/+esm');
+  const dec = new mod.MPEGDecoder();
+  await dec.ready;
+  const data = stripToFrame(raw), CH = 128 * 1024;
+  const chunks = []; let total = 0, sr = 0, nch = 0;
+  const take = r => {
+    if (!r || !r.samplesDecoded) return;
+    sr = r.sampleRate; nch = r.channelData.length;
+    chunks.push(r.channelData.map(c => c.slice(0, r.samplesDecoded)));
+    total += r.samplesDecoded;
+  };
+  for (let i = 0; i < data.length; i += CH) {
+    take(dec.decode(data.subarray(i, i + CH)));
+    loadProg(0.1 + 0.9 * Math.min(1, (i + CH) / data.length), 'デコード中');
+    await tick();
+  }
+  if (typeof dec.flush === 'function') { try { take(dec.flush()); } catch (e) {} }
+  if (dec.free) dec.free();
+  if (!total) throw new Error('MP3として読み取れませんでした');
+  const ab = new AudioBuffer({ length: total, numberOfChannels: nch, sampleRate: sr });
+  for (let c = 0; c < nch; c++) {
+    const dst = new Float32Array(total); let o = 0;
+    chunks.forEach(ch => { dst.set(ch[c], o); o += ch[c].length; });
+    ab.copyToChannel(dst, c);
+  }
+  return ab;
+}
+
+// ブラウザ標準デコーダ(進捗は出せないので経過時間のみ表示)
+async function decodeNative(raw) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const timer = setInterval(() => {
+    $('lstat').textContent = `デコード中… 経過${fmtSec((performance.now() - t0) / 1000)}(この方式は進捗%を出せません)`;
+  }, 500);
+  try {
+    try { return await ctx.decodeAudioData(raw.slice().buffer); } catch (e1) {}
+    return await ctx.decodeAudioData(stripToFrame(raw).slice().buffer);
+  } finally { clearInterval(timer); ctx.close(); }
+}
+
+async function decodeAny(file) {
+  t0 = performance.now();
+  loadProg(0, 'ファイル読み込み中');
+  try {
+    const raw = await readBuf(file);
+    srcAudioBytes = raw.length - frameOffset(raw);
+    loadProg(0.1, 'デコード準備中');
+    const isMp3 = /\.mp3$/i.test(file.name) || file.type === 'audio/mpeg';
+    if (isMp3) {
+      try { return await decodeWasm(raw); } catch (e) { /* 失敗したら標準デコーダへ */ }
+      t0 = performance.now();
+    }
+    return await decodeNative(raw);
+  } finally {
+    $('lbar').style.display = 'none';
+    $('lstat').textContent = '';
+  }
+}
+
+async function load(file) {
+  $('fname').textContent = '読み込み中…';
+  try {
+    audioBuf = await decodeAny(file);
+    fileName = file.name.replace(/\.[^.]+$/, '');
+    srcKbps = snapKbps(srcAudioBytes * 8 / 1000 / audioBuf.duration, audioBuf.sampleRate);
+    $('fmt').options[0].textContent = `自動(入力と同じ音質: ${srcKbps}kbps)`;
+    $('fname').textContent = `${file.name} / ${fmtT(audioBuf.duration)} / ${audioBuf.sampleRate}Hz / ${audioBuf.numberOfChannels}ch / 約${srcKbps}kbps`;
+    $('out2').innerHTML = ''; $('bar2').style.display = 'none';
+    $('trimCard').classList.remove('hide');
+    setTrim(0, audioBuf.duration);
+    buildPickList();
+  } catch (err) {
+    $('fname').textContent = '読み込み失敗: ' + err.message;
+  }
+}
+
+function fmtT(s) {
+  const m = Math.floor(s / 60), r = s - m * 60;
+  return `${m}:${r.toFixed(2).padStart(5, '0')}`;
+}
+
+// ---------- 無音検出(始点・終点を選ぶためのリスト用) ----------
+function scanSilence(a0, b0) {
+  const sr = audioBuf.sampleRate, ch = audioBuf.numberOfChannels;
+  const data = [];
+  for (let c = 0; c < ch; c++) data.push(audioBuf.getChannelData(c));
+  const th = Math.pow(10, parseFloat($('th').value) / 20);
+  const minLen = parseFloat($('minLen').value) || 1;
+  const win = Math.max(1, Math.floor(sr * 0.01)); // 10ms窓
+  const list = [];
+  let silentStart = null;
+  const push = (a, b) => { if ((b - a) / sr >= minLen) list.push({ start: a, end: b, on: true }); };
+  const nWin = Math.ceil((b0 - a0) / win);
+  for (let w = 0; w < nWin; w++) {
+    const s = a0 + w * win, e = Math.min(b0, s + win);
+    let peak = 0;
+    for (let c = 0; c < ch; c++) {
+      const d = data[c];
+      for (let i = s; i < e; i++) { const v = d[i] < 0 ? -d[i] : d[i]; if (v > peak) peak = v; }
+    }
+    if (peak < th) { if (silentStart === null) silentStart = s; }
+    else if (silentStart !== null) { push(silentStart, s); silentStart = null; }
+  }
+  if (silentStart !== null) push(silentStart, b0);
+  return list;
+}
+
+// ---------- 範囲指定用:無音リストから始点・終点を選ぶ ----------
+let pickRegions = [];
+function buildPickList() {
+  if (!audioBuf) return;
+  pickRegions = scanSilence(0, audioBuf.length);
+  const sr = audioBuf.sampleRate, box = $('pickList');
+  box.innerHTML = pickRegions.length ? '' : '<div class="info">条件に合う無音が見つかりませんでした</div>';
+  pickRegions.forEach(r => {
+    const div = document.createElement('div'); div.className = 'item';
+    div.innerHTML = `<span class="t">${fmtT(r.start / sr)} 〜 ${fmtT(r.end / sr)}(${((r.end - r.start) / sr).toFixed(2)}秒)</span>
+      <button class="sec">▶</button><button class="sec">始点に</button><button class="sec">終点に</button>`;
+    const [bp, bs, be] = div.querySelectorAll('button');
+    bp.onclick = () => preview(r);
+    bs.onclick = () => { const t = pickPos(r).start; setTrim(t, t >= te ? audioBuf.duration : te); };
+    be.onclick = () => { const t = pickPos(r).end; setTrim(t <= ts ? 0 : ts, t); };
+    box.appendChild(div);
+  });
+}
+function pickPos(r) {
+  const sr = audioBuf.sampleRate, k = parseFloat($('keep').value) || 0;
+  const a = r.start / sr, b = r.end / sr;
+  return { start: Math.max(a, b - k), end: Math.min(b, a + k) }; // 音の境目から k 秒ぶん無音を残す
+}
+$('th').addEventListener('change', () => audioBuf && buildPickList());
+$('minLen').addEventListener('change', () => audioBuf && buildPickList());
+
+// ---------- 試聴 ----------
+let pctx = null, psrc = null;
+function preview(r) {
+  if (psrc) { try { psrc.stop(); } catch (e) {} }
+  if (!pctx) pctx = new (window.AudioContext || window.webkitAudioContext)();
+  const sr = audioBuf.sampleRate;
+  const a = Math.max(0, r.start - sr * 1), b = Math.min(audioBuf.length, r.end + sr * 1);
+  psrc = pctx.createBufferSource(); psrc.buffer = audioBuf; psrc.connect(pctx.destination);
+  psrc.start(0, a / sr, (b - a) / sr);
+}
+
+// ---------- 範囲の切り出し ----------
+function buildOutput() {
+  const sr = audioBuf.sampleRate, ch = audioBuf.numberOfChannels, n = audioBuf.length;
+  const a0 = Math.floor(ts * sr), b0 = Math.min(n, Math.floor(te * sr));
+  const total = b0 - a0;
+  const out = [];
+  for (let c = 0; c < ch; c++) out.push(audioBuf.getChannelData(c).slice(a0, b0));
+  return { out, sr, ch, total };
+}
+
+const toI16 = f => { const o = new Int16Array(f.length); for (let i = 0; i < f.length; i++) { const v = Math.max(-1, Math.min(1, f[i])); o[i] = v < 0 ? v * 0x8000 : v * 0x7FFF; } return o; };
+
+async function encodeWav(out, sr, ch, total) {
+  const buf = new ArrayBuffer(44 + total * ch * 2), v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + total * ch * 2, true); w(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, ch, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * ch * 2, true); v.setUint16(32, ch * 2, true); v.setUint16(34, 16, true);
+  w(36, 'data'); v.setUint32(40, total * ch * 2, true);
+  const ints = out.map(toI16); let o = 44;
+  const BS = 200000;
+  for (let i = 0; i < total; i++) {
+    for (let c = 0; c < ch; c++) { v.setInt16(o, ints[c][i], true); o += 2; }
+    if (i % BS === 0) { setProg(i / total); await new Promise(r => setTimeout(r, 0)); }
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+async function encodeMp3(out, sr, ch, total, kbps) {
+  const enc = new lamejs.Mp3Encoder(Math.min(ch, 2), sr, kbps);
+  const L = toI16(out[0]), R = ch > 1 ? toI16(out[1]) : null;
+  const parts = [], BS = 1152 * 20;
+  for (let i = 0; i < total; i += BS) {
+    const l = L.subarray(i, i + BS);
+    const b = R ? enc.encodeBuffer(l, R.subarray(i, i + BS)) : enc.encodeBuffer(l);
+    if (b.length) parts.push(new Uint8Array(b));
+    setProg(i / total);
+    await new Promise(r => setTimeout(r, 0));
+  }
+  const f = enc.flush(); if (f.length) parts.push(new Uint8Array(f));
+  return new Blob(parts, { type: 'audio/mpeg' });
+}
+
+let curBar = null, curOut = null;
+function setProg(p) { curBar.style.display = 'block'; curBar.firstElementChild.style.width = (p * 100) + '%'; if (p < 1) curOut.textContent = progText('書き出し中…', p); }
+
+// ---------- 範囲指定(始点・終点) ----------
+let ts = 0, te = 0;
+function parseT(str) {
+  return String(str).trim().split(':').reduce((acc, x) => acc * 60 + parseFloat(x), 0);
+}
+const pad2 = n => String(n).padStart(2, '0');
+function hmsParts(s) {
+  const cs = Math.round(Math.max(0, s) * 100);
+  const h = Math.floor(cs / 360000), m = Math.floor(cs / 6000) % 60, sec = (cs % 6000) / 100;
+  return { h, m, sec: sec.toFixed(2).padStart(5, '0') };
+}
+function fmtHMS(s) { const t = hmsParts(s); return `${t.h}:${pad2(t.m)}:${t.sec}`; }
+function fmtJP(s) { const t = hmsParts(s); return `${t.h}時間${pad2(t.m)}分${t.sec}秒`; }
+function setTrim(a, b) {
+  const D = audioBuf.duration;
+  a = Math.max(0, Math.min(D, isFinite(a) ? a : ts));
+  b = Math.max(0, Math.min(D, isFinite(b) ? b : te));
+  if (b - a < 0.1) { if (a + 0.1 <= D) b = a + 0.1; else { b = D; a = Math.max(0, D - 0.1); } }
+  ts = a; te = b;
+  $('tStart').value = fmtHMS(ts); $('tEnd').value = fmtHMS(te);
+  $('trimInfo').textContent = `出力範囲: ${fmtHMS(ts)} 〜 ${fmtHMS(te)}(長さ ${fmtHMS(te - ts)} / 全体 ${fmtHMS(D)})`;
+  drawTrim();
+}
+function drawTrim() {
+  const cv = $('wave0'), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+  const x1 = ts / audioBuf.duration * W, x2 = te / audioBuf.duration * W;
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = 'rgba(76,195,255,.16)'; g.fillRect(x1, 0, x2 - x1, H); // 選択範囲の背景
+  const d = audioBuf.getChannelData(0), n = d.length, step = n / W;
+  for (let x = 0; x < W; x++) {
+    let mx = 0; const s = Math.floor(x * step), e = Math.min(n, Math.floor((x + 1) * step));
+    const stride = Math.max(1, Math.floor((e - s) / 50));
+    for (let i = s; i < e; i += stride) { const v = Math.abs(d[i]); if (v > mx) mx = v; }
+    const h = Math.max(1, mx * H * 0.95);
+    g.fillStyle = (x >= x1 && x < x2) ? '#7be0ff' : '#4a5266'; // 範囲内=明るい水色 / 範囲外=グレー
+    g.fillRect(x, (H - h) / 2, 1, h);
+  }
+  g.fillStyle = '#3ddc97'; g.fillRect(x1 - 1, 0, 3, H);
+  g.fillStyle = '#ff5d6c'; g.fillRect(x2 - 2, 0, 3, H);
+}
+$('wave0').addEventListener('click', e => {
+  if (!audioBuf) return;
+  const rect = e.target.getBoundingClientRect();
+  const t = (e.clientX - rect.left) / rect.width * audioBuf.duration;
+  const mode = document.querySelector('input[name=pick]:checked').value;
+  if (mode === 's') setTrim(t, t >= te ? audioBuf.duration : te);
+  else setTrim(t <= ts ? 0 : ts, t);
+});
+$('tStart').onchange = () => setTrim(parseT($('tStart').value), te);
+$('tEnd').onchange = () => setTrim(ts, parseT($('tEnd').value));
+$('tReset').onclick = () => setTrim(0, audioBuf.duration);
+function playRange(a, b) {
+  stopPlay();
+  if (!pctx) pctx = new (window.AudioContext || window.webkitAudioContext)();
+  psrc = pctx.createBufferSource(); psrc.buffer = audioBuf; psrc.connect(pctx.destination);
+  psrc.start(0, a, Math.max(0.05, b - a));
+}
+function stopPlay() { if (psrc) { try { psrc.stop(); } catch (e) {} psrc = null; } }
+$('pFirst').onclick = () => playRange(0, audioBuf.duration);
+$('pStart').onclick = () => playRange(ts, te);
+$('pStop').onclick = stopPlay;
+
+async function doExport(bar, outEl, btn, suffix) {
+  curBar = bar; curOut = outEl;
+  btn.disabled = true; outEl.textContent = '準備中…'; bar.style.display = 'block'; bar.firstElementChild.style.width = '0%';
+  t0 = performance.now();
+  try {
+    await new Promise(r => setTimeout(r, 30));
+    const { out, sr, ch, total } = buildOutput();
+    let fmt = $('fmt').value, blob, ext, note = '';
+    if (fmt !== 'wav' && typeof lamejs === 'undefined') { fmt = 'wav'; note = '(MP3エンコーダを読み込めなかったためWAVで出力)'; }
+    if (fmt === 'wav') { blob = await encodeWav(out, sr, ch, total); ext = 'wav'; }
+    else { blob = await encodeMp3(out, sr, ch, total, kbpsFor(fmt)); ext = 'mp3'; note = `(${kbpsFor(fmt)}kbps)`; }
+    setProg(1);
+    const sec = (performance.now() - t0) / 1000;
+    const url = URL.createObjectURL(blob);
+    outEl.innerHTML = `<div class="info">✅ 書き出し完了 100%(所要${fmtSec(sec)})</div>
+      <a class="dl" href="${url}" download="${fileName}_${suffix}.${ext}">⬇ ${fileName}_${suffix}.${ext} をダウンロード</a>
+      <span class="info"> ${(blob.size / 1048576).toFixed(2)}MB / ${fmtT(total / sr)} ${note}</span>
+      <audio controls src="${url}"></audio>`;
+  } catch (err) {
+    outEl.textContent = 'エラー: ' + err.message;
+  }
+  btn.disabled = false;
+}
+$('runTrim').onclick = () => doExport($('bar2'), $('out2'), $('runTrim'), 'trim');
+</script>
+</body>
+</html>
